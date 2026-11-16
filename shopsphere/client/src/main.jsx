@@ -11,7 +11,7 @@ import {
   CheckCircle, Truck, ShieldCheck, SlidersHorizontal,
   ChevronRight
 } from 'lucide-react';
-import { api, money } from './api';
+import { API, api, money } from './api';
 import './style.css';
 
 const C = createContext();
@@ -1415,7 +1415,7 @@ const load = async () => {
         const uploadData = new FormData();
         uploadData.append('image', imageFile);
 
-        const response = await fetch('/api/seller/upload', {
+      const response = await fetch(`${API}/seller/upload`, {
           method: 'POST',
           credentials: 'include',
           body: uploadData
