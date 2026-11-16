@@ -12,7 +12,7 @@ import path from 'node:path';
 import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
-import authRoutes from './routes/auth.js';
+import authRoutes from './auth.js';
 import catalogRoutes from './routes/catalog.js';
 import sellerRoutes from './routes/seller.js';
 import orderRoutes from './routes/orders.js';
