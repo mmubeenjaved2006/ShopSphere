@@ -28,10 +28,9 @@ if (
   process.env.JWT_SECRET.length < 32 ||
   !process.env.MONGO_URI
 ) {
-  console.error(
-    'Set MONGO_URI and a 32+ character JWT_SECRET in server/.env'
+  throw new Error(
+    'Set MONGO_URI and a 32+ character JWT_SECRET'
   );
-  process.exit(1);
 }
 
 // =====================================================
@@ -43,6 +42,8 @@ const app = express();
 const PORT = process.env.PORT || 5000;
 const CLIENT_URL =
   process.env.CLIENT_URL || 'http://localhost:5173';
+
+const isVercel = process.env.VERCEL === '1';
 
 // =====================================================
 // SECURITY MIDDLEWARE
@@ -72,19 +73,21 @@ app.use(
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-// server/uploads/products
-const uploadsDirectory = path.resolve(
-  __dirname,
-  '../uploads'
-);
+// Vercel uses a read-only project filesystem.
+// Only /tmp is writable during function execution.
+const uploadsDirectory = isVercel
+  ? '/tmp/shopsphere'
+  : path.resolve(__dirname, '../uploads');
 
-// Create uploads folder if missing
+// Create uploads folder if missing.
 fs.mkdirSync(
   path.join(uploadsDirectory, 'products'),
   { recursive: true }
 );
 
-// Allow browser to display uploaded images
+// Serve uploaded images.
+// Note: /tmp is temporary on Vercel, so uploaded
+// images are not guaranteed to remain available.
 app.use(
   '/uploads',
   express.static(uploadsDirectory, {
@@ -140,7 +143,8 @@ app.use('/api/account', miscRoutes);
 
 app.get('/api/health', (req, res) => {
   res.json({
-    ok: true
+    ok: true,
+    service: 'ShopSphere API'
   });
 });
 
@@ -178,25 +182,61 @@ app.use((err, req, res, next) => {
 });
 
 // =====================================================
-// MONGODB CONNECTION AND SERVER START
+// MONGODB CONNECTION
 // =====================================================
 
-mongoose
-  .connect(process.env.MONGO_URI)
-  .then(() => {
-    app.listen(PORT, () => {
-      console.log(
-        `ShopSphere API running on http://localhost:${PORT}`
-      );
-      console.log(
-        `Product images available at http://localhost:${PORT}/uploads/products/`
-      );
+let connectionPromise;
+
+function connectDatabase() {
+  if (mongoose.connection.readyState === 1) {
+    return Promise.resolve();
+  }
+
+  if (!connectionPromise) {
+    connectionPromise = mongoose
+      .connect(process.env.MONGO_URI)
+      .then(() => {
+        console.log('MongoDB connected successfully');
+      })
+      .catch((err) => {
+        connectionPromise = null;
+        console.error(
+          'MongoDB connection failed:',
+          err.message
+        );
+        throw err;
+      });
+  }
+
+  return connectionPromise;
+}
+
+// =====================================================
+// VERCEL SERVERLESS SUPPORT
+// =====================================================
+
+// Vercel imports the Express app.
+// Do not start a persistent listener in Vercel.
+if (!isVercel) {
+  connectDatabase()
+    .then(() => {
+      app.listen(PORT, () => {
+        console.log(
+          `ShopSphere API running on http://localhost:${PORT}`
+        );
+        console.log(
+          `Product images available at http://localhost:${PORT}/uploads/products/`
+        );
+      });
+    })
+    .catch((err) => {
+      console.error('Server startup failed:', err.message);
+      process.exit(1);
     });
-  })
-  .catch(e => {
-    console.error(
-      'MongoDB connection failed',
-      e.message
-    );
-    process.exit(1);
-  });
+}
+
+// Ensure MongoDB is connected before API requests.
+app.use = app.use.bind(app);
+
+// Export Express application for Vercel.
+export default app;

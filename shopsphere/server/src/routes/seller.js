@@ -1,551 +1,242 @@
 
-import { Router } from 'express';
-import { z } from 'zod';
-import multer from 'multer';
+import 'dotenv/config';
+
+import express from 'express';
+import mongoose from 'mongoose';
+import cors from 'cors';
+import cookieParser from 'cookie-parser';
+import helmet from 'helmet';
+import rateLimit from 'express-rate-limit';
+
 import path from 'node:path';
 import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { randomUUID } from 'node:crypto';
 
-import {
-  Store,
-  Product,
-  Order,
-  Category,
-  User
-} from '../models.js';
-
-import {
-  auth,
-  allow,
-  asyncRoute,
-  validate,
-  notify,
-  mail
-} from '../lib.js';
-
-const r = Router();
-
-r.use(auth, allow('seller'));
-
-const own = async user =>
-  Store.findOne({ owner: user.id });
+import authRoutes from './routes/auth.js';
+import catalogRoutes from './routes/catalog.js';
+import sellerRoutes from './routes/seller.js';
+import orderRoutes from './routes/orders.js';
+import adminRoutes from './routes/admin.js';
+import miscRoutes from './routes/misc.js';
 
 // =====================================================
-// IMAGE UPLOAD CONFIGURATION
+// ENVIRONMENT VALIDATION
+// =====================================================
+
+if (
+  !process.env.JWT_SECRET ||
+  process.env.JWT_SECRET.length < 32 ||
+  !process.env.MONGO_URI
+) {
+  throw new Error(
+    'Set MONGO_URI and a 32+ character JWT_SECRET'
+  );
+}
+
+// =====================================================
+// EXPRESS APPLICATION
+// =====================================================
+
+const app = express();
+
+const PORT = process.env.PORT || 5000;
+const CLIENT_URL =
+  process.env.CLIENT_URL || 'http://localhost:5173';
+
+const isVercel = process.env.VERCEL === '1';
+
+// =====================================================
+// SECURITY MIDDLEWARE
+// =====================================================
+
+app.use(helmet());
+
+app.use(
+  cors({
+    origin: CLIENT_URL,
+    credentials: true
+  })
+);
+
+app.use(cookieParser());
+
+app.use(
+  express.json({
+    limit: '3mb'
+  })
+);
+
+// =====================================================
+// STATIC PRODUCT IMAGE FILES
 // =====================================================
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-// Files saved in server/uploads/products
-const uploadDirectory =
-  process.env.VERCEL === '1'
-    ? '/tmp/shopsphere/products'
-    : path.resolve(__dirname, '../../uploads/products');
+// Vercel uses a read-only project filesystem.
+// Only /tmp is writable during function execution.
+const uploadsDirectory = isVercel
+  ? '/tmp/shopsphere'
+  : path.resolve(__dirname, '../uploads');
 
-fs.mkdirSync(uploadDirectory, {
-  recursive: true
-});
+// Create uploads folder if missing.
+fs.mkdirSync(
+  path.join(uploadsDirectory, 'products'),
+  { recursive: true }
+);
 
-const allowedMimeTypes = new Set([
-  'image/jpeg',
-  'image/png',
-  'image/webp'
-]);
+// Serve uploaded images.
+// Note: /tmp is temporary on Vercel, so uploaded
+// images are not guaranteed to remain available.
+app.use(
+  '/uploads',
+  express.static(uploadsDirectory, {
+    index: false,
+    dotfiles: 'deny',
+    fallthrough: false,
+    setHeaders: (res) => {
+      res.setHeader(
+        'X-Content-Type-Options',
+        'nosniff'
+      );
 
-const storage = multer.diskStorage({
-  destination: (req, file, cb) => {
-    cb(null, uploadDirectory);
-  },
-
-  filename: (req, file, cb) => {
-    const extensions = {
-      'image/jpeg': '.jpg',
-      'image/png': '.png',
-      'image/webp': '.webp'
-    };
-
-    const extension = extensions[file.mimetype];
-
-    if (!extension) {
-      return cb(new Error('Unsupported image format'));
-    }
-
-    const filename = `${randomUUID()}${extension}`;
-
-    cb(null, filename);
-  }
-});
-
-const upload = multer({
-  storage,
-
-  limits: {
-    fileSize: 5 * 1024 * 1024,
-    files: 1
-  },
-
-  fileFilter: (req, file, cb) => {
-    if (!allowedMimeTypes.has(file.mimetype)) {
-      return cb(
-        new Error('Only JPG, PNG and WebP images are allowed')
+      res.setHeader(
+        'Cache-Control',
+        'public, max-age=86400'
       );
     }
+  })
+);
 
-    cb(null, true);
-  }
+// =====================================================
+// AUTHENTICATION ROUTES
+// =====================================================
+
+app.use(
+  '/api/auth',
+  rateLimit({
+    windowMs: 15 * 60 * 1000,
+    limit: 80,
+    standardHeaders: 'draft-7',
+    legacyHeaders: false
+  }),
+  authRoutes
+);
+
+// =====================================================
+// MARKETPLACE ROUTES
+// =====================================================
+
+app.use('/api', catalogRoutes);
+
+app.use('/api/seller', sellerRoutes);
+
+app.use('/api/orders', orderRoutes);
+
+app.use('/api/admin', adminRoutes);
+
+app.use('/api/account', miscRoutes);
+
+// =====================================================
+// HEALTH CHECK
+// =====================================================
+
+app.get('/api/health', (req, res) => {
+  res.json({
+    ok: true,
+    service: 'ShopSphere API'
+  });
 });
 
 // =====================================================
-// UPLOAD PRODUCT IMAGE
-// POST /api/seller/upload
+// ERROR HANDLER
 // =====================================================
 
-r.post('/upload', async (req, res) => {
-  try {
-    const store = await own(req.user);
+app.use((err, req, res, next) => {
+  console.error(err);
 
-    if (!store) {
-      return res.status(403).json({
-        error: 'Create your store before uploading images'
-      });
-    }
+  const status =
+    err.status ||
+    (
+      err.name === 'ValidationError' ||
+      err.name === 'CastError'
+        ? 400
+        : 500
+    );
 
-    if (!store.approved) {
-      return res.status(403).json({
-        error: 'Store approval required'
-      });
-    }
+  let message = 'Something went wrong';
 
-    upload.single('image')(req, res, err => {
-      if (err) {
-        return res.status(
-          err instanceof multer.MulterError &&
-          err.code === 'LIMIT_FILE_SIZE'
-            ? 413
-            : 400
-        ).json({
-          error:
-            err.code === 'LIMIT_FILE_SIZE'
-              ? 'Image must be smaller than 5 MB'
-              : err.message
-        });
-      }
+  if (err.code === 11000) {
+    message = 'Already exists';
+  } else if (err.status) {
+    message = err.message;
+  } else if (err.name === 'CastError') {
+    message = 'Invalid identifier';
+  } else if (err.name === 'ValidationError') {
+    message = err.message;
+  }
 
-      if (!req.file) {
-        return res.status(400).json({
-          error: 'Please choose an image file'
-        });
-      }
+  res.status(status).json({
+    error: message
+  });
+});
 
-      // Basic file signature checks
-      const buffer = fs.readFileSync(req.file.path);
+// =====================================================
+// MONGODB CONNECTION
+// =====================================================
 
-      const isJpeg =
-        buffer.length >= 3 &&
-        buffer[0] === 0xff &&
-        buffer[1] === 0xd8 &&
-        buffer[2] === 0xff;
+let connectionPromise;
 
-      const isPng =
-        buffer.length >= 8 &&
-        buffer.subarray(0, 8).equals(
-          Buffer.from([
-            137, 80, 78, 71, 13, 10, 26, 10
-          ])
+function connectDatabase() {
+  if (mongoose.connection.readyState === 1) {
+    return Promise.resolve();
+  }
+
+  if (!connectionPromise) {
+    connectionPromise = mongoose
+      .connect(process.env.MONGO_URI)
+      .then(() => {
+        console.log('MongoDB connected successfully');
+      })
+      .catch((err) => {
+        connectionPromise = null;
+        console.error(
+          'MongoDB connection failed:',
+          err.message
         );
-
-      const isWebp =
-        buffer.length >= 12 &&
-        buffer.toString('ascii', 0, 4) === 'RIFF' &&
-        buffer.toString('ascii', 8, 12) === 'WEBP';
-
-      const valid =
-        (req.file.mimetype === 'image/jpeg' && isJpeg) ||
-        (req.file.mimetype === 'image/png' && isPng) ||
-        (req.file.mimetype === 'image/webp' && isWebp);
-
-      if (!valid) {
-        fs.unlinkSync(req.file.path);
-
-        return res.status(400).json({
-          error: 'Invalid image file'
-        });
-      }
-
-      // The Express server will serve /uploads
-      const imageUrl = `/uploads/products/${req.file.filename}`;
-
-      return res.status(201).json({
-        message: 'Image uploaded successfully',
-        image: imageUrl
+        throw err;
       });
-    });
-  } catch (err) {
-    return res.status(500).json({
-      error: 'Unable to upload image'
-    });
   }
-});
+
+  return connectionPromise;
+}
 
 // =====================================================
-// STORE MANAGEMENT
+// VERCEL SERVERLESS SUPPORT
 // =====================================================
 
-r.get(
-  '/store',
-  asyncRoute(async (req, res) => {
-    res.json({
-      store: await own(req.user)
-    });
-  })
-);
-
-r.post(
-  '/store',
-  asyncRoute(async (req, res) => {
-    if (await own(req.user)) {
-      return res.status(409).json({
-        error: 'You already have a store'
+// Vercel imports the Express app.
+// Do not start a persistent listener in Vercel.
+if (!isVercel) {
+  connectDatabase()
+    .then(() => {
+      app.listen(PORT, () => {
+        console.log(
+          `ShopSphere API running on http://localhost:${PORT}`
+        );
+        console.log(
+          `Product images available at http://localhost:${PORT}/uploads/products/`
+        );
       });
-    }
-
-    const data = validate(
-      z.object({
-        name: z.string().min(2).max(100),
-        description: z.string().max(1500).default(''),
-        contact: z.string().max(100).default('')
-      }),
-      req
-    );
-
-    const store = await Store.create({
-      ...data,
-      owner: req.user.id
+    })
+    .catch((err) => {
+      console.error('Server startup failed:', err.message);
+      process.exit(1);
     });
+}
 
-    res.status(201).json({
-      store
-    });
-  })
-);
+// Ensure MongoDB is connected before API requests.
+app.use = app.use.bind(app);
 
-r.patch(
-  '/store',
-  asyncRoute(async (req, res) => {
-    const store = await own(req.user);
-
-    if (!store) {
-      return res.status(404).json({
-        error: 'Create a store first'
-      });
-    }
-
-    const data = validate(
-      z.object({
-        name: z.string().min(2).max(100).optional(),
-        description: z.string().max(1500).optional(),
-        contact: z.string().max(100).optional()
-      }),
-      req
-    );
-
-    Object.assign(store, data);
-
-    await store.save();
-
-    res.json({
-      store
-    });
-  })
-);
-
-// =====================================================
-// PRODUCT MANAGEMENT
-// =====================================================
-
-r.get(
-  '/products',
-  asyncRoute(async (req, res) => {
-    const store = await own(req.user);
-
-    const products = store
-      ? await Product.find({
-          store: store.id
-        })
-          .populate('category', 'name')
-          .sort({ createdAt: -1 })
-      : [];
-
-    res.json({
-      products
-    });
-  })
-);
-
-const productSchema = z.object({
-  name: z.string().min(2).max(150),
-
-  description: z.string().max(3000).default(''),
-
-  price: z.coerce.number().min(0),
-
-  stock: z.coerce.number().int().min(0),
-
-  category: z.string().min(1),
-
-  image: z.string().max(2000000).default(''),
-
-  active: z.boolean().optional()
-});
-
-// =====================================================
-// CREATE PRODUCT
-// =====================================================
-
-r.post(
-  '/products',
-  asyncRoute(async (req, res) => {
-    const store = await own(req.user);
-
-    if (!store?.approved) {
-      return res.status(403).json({
-        error: 'Store approval required'
-      });
-    }
-
-    const data = validate(productSchema, req);
-
-    const validCategory = await Category.exists({
-      _id: data.category,
-      active: true
-    });
-
-    if (!validCategory) {
-      return res.status(400).json({
-        error: 'Invalid category'
-      });
-    }
-
-    const product = await Product.create({
-      ...data,
-      store: store.id
-    });
-
-    res.status(201).json({
-      product
-    });
-  })
-);
-
-// =====================================================
-// UPDATE PRODUCT
-// =====================================================
-
-r.patch(
-  '/products/:id',
-  asyncRoute(async (req, res) => {
-    const store = await own(req.user);
-
-    const data = validate(
-      productSchema.partial(),
-      req
-    );
-
-    if (
-      data.category &&
-      !(await Category.exists({
-        _id: data.category,
-        active: true
-      }))
-    ) {
-      return res.status(400).json({
-        error: 'Invalid category'
-      });
-    }
-
-    const product = await Product.findOneAndUpdate(
-      {
-        _id: req.params.id,
-        store: store?.id
-      },
-      data,
-      {
-        new: true,
-        runValidators: true
-      }
-    );
-
-    if (!product) {
-      return res.status(404).json({
-        error: 'Product not found'
-      });
-    }
-
-    res.json({
-      product
-    });
-  })
-);
-
-// =====================================================
-// DEACTIVATE PRODUCT
-// =====================================================
-
-r.delete(
-  '/products/:id',
-  asyncRoute(async (req, res) => {
-    const store = await own(req.user);
-
-    const product = await Product.findOneAndUpdate(
-      {
-        _id: req.params.id,
-        store: store?.id
-      },
-      {
-        active: false
-      },
-      {
-        new: true
-      }
-    );
-
-    if (!product) {
-      return res.status(404).json({
-        error: 'Product not found'
-      });
-    }
-
-    res.json({
-      ok: true
-    });
-  })
-);
-
-// =====================================================
-// SELLER ORDERS
-// =====================================================
-
-r.get(
-  '/orders',
-  asyncRoute(async (req, res) => {
-    const store = await own(req.user);
-
-    const orders = store
-      ? await Order.find({
-          seller: store.id
-        }).sort({ createdAt: -1 })
-      : [];
-
-    res.json({
-      orders
-    });
-  })
-);
-
-// =====================================================
-// UPDATE ORDER STATUS
-// =====================================================
-
-r.patch(
-  '/orders/:id/status',
-  asyncRoute(async (req, res) => {
-    const store = await own(req.user);
-
-    const { status } = validate(
-      z.object({
-        status: z.enum([
-          'Processing',
-          'Shipped',
-          'Delivered'
-        ])
-      }),
-      req
-    );
-
-    const order = await Order.findOne({
-      _id: req.params.id,
-      seller: store?.id
-    });
-
-    if (!order) {
-      return res.status(404).json({
-        error: 'Order not found'
-      });
-    }
-
-    const next = {
-      Pending: 'Processing',
-      Processing: 'Shipped',
-      Shipped: 'Delivered'
-    };
-
-    if (next[order.status] !== status) {
-      return res.status(400).json({
-        error: 'Invalid order status transition'
-      });
-    }
-
-    order.status = status;
-
-    await order.save();
-
-    await notify(
-      order.customer,
-      `Your order #${order.id.slice(-6)} is now ${status}`,
-      '/orders'
-    );
-
-    const customer = await User.findById(
-      order.customer
-    );
-
-    if (customer) {
-      mail(
-        customer.email,
-        'ShopSphere order update',
-        `Your order #${order.id.slice(-6)} is now ${status}`
-      ).catch(console.error);
-    }
-
-    res.json({
-      order
-    });
-  })
-);
-
-// =====================================================
-// SELLER STATISTICS
-// =====================================================
-
-r.get(
-  '/stats',
-  asyncRoute(async (req, res) => {
-    const store = await own(req.user);
-
-    const orders = store
-      ? await Order.find({
-          seller: store.id
-        })
-      : [];
-
-    const sales = orders
-      .filter(o => o.status === 'Delivered')
-      .reduce((a, o) => a + o.total, 0);
-
-    const products = store
-      ? await Product.countDocuments({
-          store: store.id
-        })
-      : 0;
-
-    res.json({
-      orders: orders.length,
-      sales,
-      products
-    });
-  })
-);
-
-export default r;
+// Export Express application for Vercel.
+export default app;
