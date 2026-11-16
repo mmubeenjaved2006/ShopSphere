@@ -1264,33 +1264,60 @@ function Seller() {
   const [saving, setSaving] = useState(false);
   const [fileInputKey, setFileInputKey] = useState(0);
 
-  const load = async () => {
-    try {
-      const [s, p, o, st, c] = await Promise.all([
-        api('/seller/store'),
-        api('/seller/products'),
-        api('/seller/orders'),
-        api('/seller/stats'),
-        api('/categories')
-      ]);
+  
+const load = async () => {
+  // Load categories independently
+  try {
+    const categoriesData = await api('/categories');
+    setCategories(categoriesData);
+  } catch (e) {
+    console.error('Categories loading failed:', e);
+    flash('Failed to load categories');
+  }
 
-      setStore(s.store);
-      setProducts(p.products);
-      setOrders(o.orders);
-      setStats(st);
-      setCategories(c);
+  // Load seller dashboard data separately
+  const results = await Promise.allSettled([
+    api('/seller/store'),
+    api('/seller/products'),
+    api('/seller/orders'),
+    api('/seller/stats')
+  ]);
 
-      if (s.store) {
-        setStoreForm({
-          name: s.store.name,
-          description: s.store.description || '',
-          contact: s.store.contact || ''
-        });
-      }
-    } catch (e) {
-      flash(e.message);
+  const [s, p, o, st] = results;
+
+  if (s.status === 'fulfilled') {
+    setStore(s.value.store);
+
+    if (s.value.store) {
+      setStoreForm({
+        name: s.value.store.name,
+        description: s.value.store.description || '',
+        contact: s.value.store.contact || ''
+      });
     }
-  };
+  }
+
+  if (p.status === 'fulfilled') {
+    setProducts(p.value.products);
+  }
+
+  if (o.status === 'fulfilled') {
+    setOrders(o.value.orders);
+  }
+
+  if (st.status === 'fulfilled') {
+    setStats(st.value);
+  }
+
+  results.forEach((result, index) => {
+    if (result.status === 'rejected') {
+      console.error(
+        `Seller API ${index + 1} failed:`,
+        result.reason
+      );
+    }
+  });
+};
 
   useEffect(() => {
     load();
