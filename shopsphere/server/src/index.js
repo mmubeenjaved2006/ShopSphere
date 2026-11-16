@@ -235,8 +235,21 @@ if (!isVercel) {
     });
 }
 
-// Ensure MongoDB is connected before API requests.
-app.use = app.use.bind(app);
+// =====================================================
+// VERCEL SERVERLESS HANDLER
+// =====================================================
 
-// Export Express application for Vercel.
-export default app;
+// Connect to MongoDB before processing API requests.
+export default async function handler(req, res) {
+  try {
+    await connectDatabase();
+
+    return app(req, res);
+  } catch (error) {
+    console.error('Database connection error:', error.message);
+
+    return res.status(503).json({
+      error: 'Database temporarily unavailable'
+    });
+  }
+}
