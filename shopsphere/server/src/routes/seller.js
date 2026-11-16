@@ -39,10 +39,10 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 // Files saved in server/uploads/products
-const uploadDirectory = path.resolve(
-  __dirname,
-  '../../uploads/products'
-);
+const uploadDirectory =
+  process.env.VERCEL === '1'
+    ? '/tmp/shopsphere/products'
+    : path.resolve(__dirname, '../../uploads/products');
 
 fs.mkdirSync(uploadDirectory, {
   recursive: true
