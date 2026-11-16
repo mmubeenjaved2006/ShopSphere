@@ -1,0 +1,17 @@
+import {Router} from 'express';
+import {z} from 'zod';
+import {User,Store,Product,Category,Order} from '../models.js';
+import {auth,allow,asyncRoute,validate,notify} from '../lib.js';
+const r=Router();r.use(auth,allow('admin'));
+r.get('/overview',asyncRoute(async(req,res)=>{const [users,sellers,products,orders,pending]=await Promise.all([User.countDocuments(),Store.countDocuments(),Product.countDocuments(),Order.countDocuments(),Store.countDocuments({approved:false})]);res.json({users,sellers,products,orders,pending});}));
+r.get('/users',asyncRoute(async(req,res)=>res.json({users:await User.find().sort({createdAt:-1}).limit(200)})));
+r.patch('/users/:id',asyncRoute(async(req,res)=>{const {active}=validate(z.object({active:z.boolean()}),req);if(req.params.id===req.user.id)return res.status(400).json({error:'Cannot deactivate yourself'});const user=await User.findByIdAndUpdate(req.params.id,{active},{new:true});if(!user)return res.status(404).json({error:'User not found'});res.json({user});}));
+r.get('/stores',asyncRoute(async(req,res)=>res.json({stores:await Store.find().populate('owner','name email').sort({createdAt:-1})})));
+r.patch('/stores/:id',asyncRoute(async(req,res)=>{const {approved}=validate(z.object({approved:z.boolean()}),req);const store=await Store.findByIdAndUpdate(req.params.id,{approved},{new:true});if(!store)return res.status(404).json({error:'Store not found'});await notify(store.owner,approved?'Your store has been approved':'Your store approval has been revoked','/seller');res.json({store});}));
+r.get('/categories',asyncRoute(async(req,res)=>res.json({categories:await Category.find().sort({name:1})})));
+r.post('/categories',asyncRoute(async(req,res)=>{const {name}=validate(z.object({name:z.string().trim().min(2).max(80)}),req);res.status(201).json({category:await Category.create({name})});}));
+r.patch('/categories/:id',asyncRoute(async(req,res)=>{const data=validate(z.object({name:z.string().min(2).max(80).optional(),active:z.boolean().optional()}),req);const category=await Category.findByIdAndUpdate(req.params.id,data,{new:true,runValidators:true});res.json({category});}));
+r.get('/products',asyncRoute(async(req,res)=>res.json({products:await Product.find().populate('store','name').limit(300).sort({createdAt:-1})})));
+r.patch('/products/:id',asyncRoute(async(req,res)=>{const {active}=validate(z.object({active:z.boolean()}),req);res.json({product:await Product.findByIdAndUpdate(req.params.id,{active},{new:true})});}));
+r.get('/orders',asyncRoute(async(req,res)=>res.json({orders:await Order.find().populate('seller','name').populate('customer','name email').sort({createdAt:-1}).limit(200)})));
+export default r;

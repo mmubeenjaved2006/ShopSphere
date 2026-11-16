@@ -1,0 +1,10 @@
+import {Router} from 'express';
+import {Notification,Wishlist,Product} from '../models.js';
+import {auth,allow,asyncRoute} from '../lib.js';
+const r=Router();r.use(auth);
+r.get('/notifications',asyncRoute(async(req,res)=>res.json({notifications:await Notification.find({user:req.user.id}).sort({createdAt:-1}).limit(100)})));
+r.patch('/notifications/:id/read',asyncRoute(async(req,res)=>{await Notification.updateOne({_id:req.params.id,user:req.user.id},{read:true});res.json({ok:true});}));
+r.get('/wishlist',allow('customer'),asyncRoute(async(req,res)=>{const list=await Wishlist.findOne({user:req.user.id}).populate({path:'products',populate:{path:'store',select:'name'}});res.json({products:list?.products||[]});}));
+r.post('/wishlist/:id',allow('customer'),asyncRoute(async(req,res)=>{if(!await Product.exists({_id:req.params.id,active:true}))return res.status(404).json({error:'Product not found'});await Wishlist.updateOne({user:req.user.id},{$addToSet:{products:req.params.id}},{upsert:true});res.json({ok:true});}));
+r.delete('/wishlist/:id',allow('customer'),asyncRoute(async(req,res)=>{await Wishlist.updateOne({user:req.user.id},{$pull:{products:req.params.id}});res.json({ok:true});}));
+export default r;
