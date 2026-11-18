@@ -2,10 +2,7 @@
 import { Router } from 'express';
 import { z } from 'zod';
 import multer from 'multer';
-import path from 'node:path';
-import fs from 'node:fs';
-import { fileURLToPath } from 'node:url';
-import { randomUUID } from 'node:crypto';
+import { v2 as cloudinary } from 'cloudinary';
 
 import {
   Store,
@@ -24,6 +21,16 @@ import {
   mail
 } from '../lib.js';
 
+// =====================================================
+// CLOUDINARY CONFIGURATION
+// =====================================================
+
+cloudinary.config({
+  cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
+  api_key: process.env.CLOUDINARY_API_KEY,
+  api_secret: process.env.CLOUDINARY_API_SECRET
+});
+
 const r = Router();
 
 r.use(auth, allow('seller'));
@@ -35,51 +42,14 @@ const own = async user =>
 // IMAGE UPLOAD CONFIGURATION
 // =====================================================
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-
-// Files saved in server/uploads/products
-const uploadDirectory =
-  process.env.VERCEL === '1'
-    ? '/tmp/shopsphere/products'
-    : path.resolve(__dirname, '../../uploads/products');
-
-fs.mkdirSync(uploadDirectory, {
-  recursive: true
-});
-
 const allowedMimeTypes = new Set([
   'image/jpeg',
   'image/png',
   'image/webp'
 ]);
 
-const storage = multer.diskStorage({
-  destination: (req, file, cb) => {
-    cb(null, uploadDirectory);
-  },
-
-  filename: (req, file, cb) => {
-    const extensions = {
-      'image/jpeg': '.jpg',
-      'image/png': '.png',
-      'image/webp': '.webp'
-    };
-
-    const extension = extensions[file.mimetype];
-
-    if (!extension) {
-      return cb(new Error('Unsupported image format'));
-    }
-
-    const filename = `${randomUUID()}${extension}`;
-
-    cb(null, filename);
-  }
-});
-
 const upload = multer({
-  storage,
+  storage: multer.memoryStorage(),
 
   limits: {
     fileSize: 5 * 1024 * 1024,
@@ -97,13 +67,67 @@ const upload = multer({
   }
 });
 
+function isValidImage(buffer, mimeType) {
+  const isJpeg =
+    buffer.length >= 3 &&
+    buffer[0] === 0xff &&
+    buffer[1] === 0xd8 &&
+    buffer[2] === 0xff;
+
+  const isPng =
+    buffer.length >= 8 &&
+    buffer.subarray(0, 8).equals(
+      Buffer.from([
+        137, 80, 78, 71, 13, 10, 26, 10
+      ])
+    );
+
+  const isWebp =
+    buffer.length >= 12 &&
+    buffer.toString('ascii', 0, 4) === 'RIFF' &&
+    buffer.toString('ascii', 8, 12) === 'WEBP';
+
+  return (
+    (mimeType === 'image/jpeg' && isJpeg) ||
+    (mimeType === 'image/png' && isPng) ||
+    (mimeType === 'image/webp' && isWebp)
+  );
+}
+
+function uploadToCloudinary(buffer) {
+  return new Promise((resolve, reject) => {
+    const stream = cloudinary.uploader.upload_stream(
+      {
+        folder: 'shopsphere/products',
+        resource_type: 'image'
+      },
+      (error, result) => {
+        if (error) {
+          return reject(error);
+        }
+
+        if (!result?.secure_url) {
+          return reject(
+            new Error('Cloudinary did not return an image URL')
+          );
+        }
+
+        resolve(result.secure_url);
+      }
+    );
+
+    stream.end(buffer);
+  });
+}
+
 // =====================================================
 // UPLOAD PRODUCT IMAGE
 // POST /api/seller/upload
 // =====================================================
 
-r.post('/upload', async (req, res) => {
-  try {
+r.post(
+  '/upload',
+  asyncRoute(async (req, res) => {
     const store = await own(req.user);
 
     if (!store) {
@@ -118,7 +142,7 @@ r.post('/upload', async (req, res) => {
       });
     }
 
-    upload.single('image')(req, res, err => {
+    upload.single('image')(req, res, async err => {
       if (err) {
         return res.status(
           err instanceof multer.MulterError &&
@@ -139,55 +163,49 @@ r.post('/upload', async (req, res) => {
         });
       }
 
-      // Basic file signature checks
-      const buffer = fs.readFileSync(req.file.path);
-
-      const isJpeg =
-        buffer.length >= 3 &&
-        buffer[0] === 0xff &&
-        buffer[1] === 0xd8 &&
-        buffer[2] === 0xff;
-
-      const isPng =
-        buffer.length >= 8 &&
-        buffer.subarray(0, 8).equals(
-          Buffer.from([
-            137, 80, 78, 71, 13, 10, 26, 10
-          ])
-        );
-
-      const isWebp =
-        buffer.length >= 12 &&
-        buffer.toString('ascii', 0, 4) === 'RIFF' &&
-        buffer.toString('ascii', 8, 12) === 'WEBP';
-
-      const valid =
-        (req.file.mimetype === 'image/jpeg' && isJpeg) ||
-        (req.file.mimetype === 'image/png' && isPng) ||
-        (req.file.mimetype === 'image/webp' && isWebp);
-
-      if (!valid) {
-        fs.unlinkSync(req.file.path);
-
+      if (
+        !isValidImage(
+          req.file.buffer,
+          req.file.mimetype
+        )
+      ) {
         return res.status(400).json({
           error: 'Invalid image file'
         });
       }
 
-      // The Express server will serve /uploads
-      const imageUrl = `/uploads/products/${req.file.filename}`;
+      if (
+        !process.env.CLOUDINARY_CLOUD_NAME ||
+        !process.env.CLOUDINARY_API_KEY ||
+        !process.env.CLOUDINARY_API_SECRET
+      ) {
+        return res.status(503).json({
+          error: 'Image storage is not configured'
+        });
+      }
 
-      return res.status(201).json({
-        message: 'Image uploaded successfully',
-        image: imageUrl
-      });
+      try {
+        const imageUrl = await uploadToCloudinary(
+          req.file.buffer
+        );
+
+        return res.status(201).json({
+          message: 'Image uploaded successfully',
+          image: imageUrl
+        });
+      } catch (error) {
+        console.error(
+          'Cloudinary upload failed:',
+          error.message
+        );
+
+        return res.status(502).json({
+          error: 'Unable to upload image'
+        });
+      }
     });
-  } catch (err) {
-    return res.status(500).json({
-      error: 'Unable to upload image'
-    });
-  }
-});
+  })
+);
 
 // =====================================================
 // STORE MANAGEMENT
