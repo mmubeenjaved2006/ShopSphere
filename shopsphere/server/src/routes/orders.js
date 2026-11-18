@@ -405,16 +405,24 @@ r.post(
         const htmlMessage =
           createOrderConfirmationEmail(order);
 
-        mail(
-          customerEmail,
-          subject,
-          htmlMessage
-        ).catch(error => {
-          console.error(
-            'Customer confirmation email failed:',
-            error
-          );
-        });
+      try {
+  const sent = await mail(
+    customerEmail,
+    subject,
+    htmlMessage
+  );
+
+  if (!sent) {
+    console.error(
+      'Customer confirmation email skipped: SMTP not configured'
+    );
+  }
+} catch (error) {
+  console.error(
+    'Customer confirmation email failed:',
+    error
+  );
+}
       }
     } catch (error) {
       console.error(
