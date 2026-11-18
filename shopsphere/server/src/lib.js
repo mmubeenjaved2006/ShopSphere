@@ -33,8 +33,8 @@ export function token(user) {
 export function setCookie(res, value) {
   res.cookie('shopsphere_session', value, {
     httpOnly: true,
-    sameSite: 'lax',
-    secure: process.env.NODE_ENV === 'production',
+   sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax',
+   secure: process.env.NODE_ENV === 'production',
     maxAge: 7 * 86400000,
     path: '/'
   });

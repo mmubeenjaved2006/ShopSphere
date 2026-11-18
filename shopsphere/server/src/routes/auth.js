@@ -218,7 +218,7 @@ r.post('/google', asyncRoute(async (req, res) => {
 r.post('/logout', (req, res) => {
   res.clearCookie('shopsphere_session', {
     path: '/',
-    sameSite: 'lax',
+    sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax',
     secure: process.env.NODE_ENV === 'production'
   });
 
