@@ -66,6 +66,10 @@ const upload = multer({
   }
 });
 
+// =====================================================
+// IMAGE FILE VALIDATION
+// =====================================================
+
 function isValidImage(buffer, mimeType) {
   const isJpeg =
     buffer.length >= 3 &&
@@ -92,6 +96,10 @@ function isValidImage(buffer, mimeType) {
     (mimeType === 'image/webp' && isWebp)
   );
 }
+
+// =====================================================
+// CLOUDINARY IMAGE UPLOAD
+// =====================================================
 
 function uploadToCloudinary(buffer) {
   return new Promise((resolve, reject) => {
@@ -222,7 +230,7 @@ r.get(
 );
 
 // =====================================================
-// CREATE STORE — UPDATED VALIDATION
+// CREATE STORE
 // =====================================================
 
 r.post(
@@ -268,7 +276,7 @@ r.post(
 );
 
 // =====================================================
-// UPDATE STORE — UPDATED VALIDATION
+// UPDATE STORE
 // =====================================================
 
 r.patch(
@@ -381,7 +389,7 @@ function parseProductNumber(value) {
 }
 
 // =====================================================
-// PRODUCT SCHEMA — UPDATED VALIDATION
+// PRODUCT SCHEMA
 // =====================================================
 
 const productSchema = z.object({
@@ -435,7 +443,7 @@ const productSchema = z.object({
 });
 
 // =====================================================
-// CREATE PRODUCT — UPDATED VALIDATION
+// CREATE PRODUCT
 // =====================================================
 
 r.post(
@@ -474,7 +482,7 @@ r.post(
 );
 
 // =====================================================
-// UPDATE PRODUCT — UPDATED VALIDATION
+// UPDATE PRODUCT
 // =====================================================
 
 r.patch(
@@ -585,7 +593,288 @@ r.get(
 );
 
 // =====================================================
-// UPDATE ORDER STATUS
+// EMAIL HELPERS
+// =====================================================
+
+const formatPrice = amount =>
+  Number(amount).toLocaleString('en-PK', {
+    minimumFractionDigits: 0,
+    maximumFractionDigits: 2
+  });
+
+const safeText = value =>
+  String(value ?? '').replace(/[&<>"']/g, char => ({
+    '&': '&amp;',
+    '<': '&lt;',
+    '>': '&gt;',
+    '"': '&quot;',
+    "'": '&#39;'
+  })[char]);
+
+// =====================================================
+// PROFESSIONAL ORDER STATUS EMAIL TEMPLATE
+// =====================================================
+
+function createOrderStatusEmail(order, customer, status) {
+  const orderId = order.id.slice(-8).toUpperCase();
+
+  const statusDetails = {
+
+    Processing: {
+      title: 'Your Order Is Being Processed!',
+      message:
+        'Your seller has confirmed your order and is preparing it for shipment.',
+      icon: '&#10003;',
+      color: '#946200'
+    },
+
+    Shipped: {
+      title: 'Your Order Has Been Shipped!',
+      message:
+        'Great news! Your order is on its way to your delivery address.',
+      icon: '&#128666;',
+      color: '#245a81'
+    },
+
+    Delivered: {
+      title: 'Your Order Has Been Delivered!',
+      message:
+        'Your order has been successfully delivered. Thank you for shopping with ShopSphere!',
+      icon: '&#10003;',
+      color: '#237a45'
+    }
+
+  };
+
+  const details = statusDetails[status];
+
+  const trackingUrl = new URL(
+    '/orders',
+    process.env.CLIENT_URL ||
+    'https://shopsphere-frontend-gamma.vercel.app'
+  ).href;
+
+  const productRows = order.items.map(item => `
+    <tr>
+
+      <td style="padding:14px 12px;border-bottom:1px solid #e9e3dc;">
+        ${safeText(item.name)}
+      </td>
+
+      <td style="padding:14px 12px;text-align:center;border-bottom:1px solid #e9e3dc;">
+        ${item.quantity}
+      </td>
+
+      <td style="padding:14px 12px;text-align:right;border-bottom:1px solid #e9e3dc;">
+        PKR ${formatPrice(item.price * item.quantity)}
+      </td>
+
+    </tr>
+  `).join('');
+
+  return `
+
+    <div style="margin:0;padding:32px 12px;background:#f6f4f0;font-family:Arial,Helvetica,sans-serif;color:#252525;">
+
+      <div style="max-width:620px;margin:auto;background:#ffffff;border:1px solid #e7e1d8;border-radius:12px;overflow:hidden;">
+
+        <!-- SHOPSPHERE HEADER -->
+
+        <div style="background:#172b43;padding:28px;text-align:center;">
+
+          <h1 style="color:#ffffff;margin:0;font-size:30px;letter-spacing:1px;">
+            ShopSphere
+          </h1>
+
+          <p style="color:#d7e0e8;margin:8px 0 0;font-size:13px;">
+            Your marketplace. Your style.
+          </p>
+
+        </div>
+
+        <!-- EMAIL BODY -->
+
+        <div style="padding:32px 28px;">
+
+          <!-- STATUS MESSAGE -->
+
+          <div style="text-align:center;margin-bottom:28px;">
+
+            <div style="font-size:42px;color:${details.color};margin-bottom:12px;">
+              ${details.icon}
+            </div>
+
+            <h2 style="font-size:26px;color:#172b43;margin:0 0 12px;">
+              ${details.title}
+            </h2>
+
+            <p style="color:#666;line-height:1.7;">
+              Dear ${safeText(customer.name || order.delivery?.name || 'Customer')},
+            </p>
+
+            <p style="color:#666;line-height:1.7;">
+              ${details.message}
+            </p>
+
+          </div>
+
+          <!-- ORDER INFORMATION -->
+
+          <div style="background:#f6f4f0;padding:20px;border-radius:8px;margin-bottom:24px;">
+
+            <p style="margin:0 0 8px;font-size:13px;color:#777;">
+              ORDER NUMBER
+            </p>
+
+            <h3 style="margin:0;color:#172b43;font-size:22px;">
+              #${orderId}
+            </h3>
+
+            <p style="margin:12px 0 0;font-size:14px;">
+
+              <strong>Status:</strong>
+
+              <span style="color:${details.color};font-weight:bold;">
+                ${safeText(status)}
+              </span>
+
+            </p>
+
+            <p style="margin:8px 0 0;font-size:14px;">
+              <strong>Payment:</strong> Cash on Delivery
+            </p>
+
+          </div>
+
+          <!-- PRODUCT SUMMARY -->
+
+          <h3 style="color:#172b43;margin-bottom:12px;">
+            Order Summary
+          </h3>
+
+          <table style="width:100%;border-collapse:collapse;font-size:14px;">
+
+            <thead>
+
+              <tr style="background:#f6f4f0;">
+
+                <th style="padding:12px;text-align:left;">
+                  Product
+                </th>
+
+                <th style="padding:12px;text-align:center;">
+                  Qty
+                </th>
+
+                <th style="padding:12px;text-align:right;">
+                  Amount
+                </th>
+
+              </tr>
+
+            </thead>
+
+            <tbody>
+              ${productRows}
+            </tbody>
+
+          </table>
+
+          <!-- TOTAL AMOUNT -->
+
+          <div style="text-align:right;padding:22px 0;border-bottom:1px solid #e9e3dc;">
+
+            <span style="font-size:15px;color:#555;">
+              Total Amount:
+            </span>
+
+            <strong style="font-size:22px;color:#172b43;margin-left:12px;">
+              PKR ${formatPrice(order.total)}
+            </strong>
+
+          </div>
+
+          <!-- DELIVERY INFORMATION -->
+
+          <div style="margin-top:24px;">
+
+            <h3 style="color:#172b43;margin-bottom:14px;">
+              Delivery Information
+            </h3>
+
+            <p style="margin:8px 0;line-height:1.6;">
+              <strong>Name:</strong>
+              ${safeText(order.delivery?.name)}
+            </p>
+
+            <p style="margin:8px 0;line-height:1.6;">
+              <strong>Phone:</strong>
+              ${safeText(order.delivery?.phone)}
+            </p>
+
+            <p style="margin:8px 0;line-height:1.6;">
+              <strong>Address:</strong>
+              ${safeText(order.delivery?.address)}
+            </p>
+
+          </div>
+
+          <!-- ORDER TRACKING BUTTON -->
+
+          <div style="text-align:center;margin-top:30px;">
+
+            <a
+              href="${safeText(trackingUrl)}"
+              style="display:inline-block;background:#172b43;color:#ffffff;padding:14px 28px;text-decoration:none;border-radius:6px;font-weight:bold;"
+            >
+
+              ${status === 'Delivered'
+                ? 'View Your Order'
+                : 'Track Your Order'}
+
+            </a>
+
+          </div>
+
+          <!-- THANK YOU MESSAGE -->
+
+          <div style="background:#f6f4f0;padding:18px;border-radius:8px;margin-top:26px;">
+
+            <p style="margin:0;font-size:14px;line-height:1.7;color:#555;">
+
+              ${status === 'Delivered'
+                ? 'We hope you enjoy your purchase. You can visit your ShopSphere account to view your order and leave a product review.'
+                : 'You can track the latest order status anytime from your ShopSphere account.'}
+
+            </p>
+
+          </div>
+
+          <p style="text-align:center;color:#777;font-size:13px;margin-top:30px;">
+            Thank you for choosing ShopSphere!
+          </p>
+
+        </div>
+
+        <!-- EMAIL FOOTER -->
+
+        <div style="background:#172b43;text-align:center;padding:20px;">
+
+          <p style="color:#ffffff;font-size:13px;margin:0;">
+            © 2026 ShopSphere. All rights reserved.
+          </p>
+
+        </div>
+
+      </div>
+
+    </div>
+
+  `;
+}
+
+// =====================================================
+// UPDATE ORDER STATUS + SEND PROFESSIONAL EMAIL
 // =====================================================
 
 r.patch(
@@ -593,20 +882,28 @@ r.patch(
   asyncRoute(async (req, res) => {
     const store = await own(req.user);
 
+    if (!store) {
+      return res.status(403).json({
+        error: 'Create your store first'
+      });
+    }
+
     const { status } = validate(
       z.object({
+
         status: z.enum([
           'Processing',
           'Shipped',
           'Delivered'
         ])
+
       }),
       req
     );
 
     const order = await Order.findOne({
       _id: req.params.id,
-      seller: store?.id
+      seller: store.id
     });
 
     if (!order) {
@@ -614,6 +911,10 @@ r.patch(
         error: 'Order not found'
       });
     }
+
+    // =================================================
+    // VALID ORDER STATUS TRANSITIONS
+    // =================================================
 
     const next = {
       Pending: 'Processing',
@@ -627,30 +928,112 @@ r.patch(
       });
     }
 
-    order.status = status;
+    // =================================================
+    // UPDATE ORDER STATUS
+    // =================================================
 
-    await order.save();
-
-    await notify(
-      order.customer,
-      `Your order #${order.id.slice(-6)} is now ${status}`,
-      '/orders'
+    const updatedOrder = await Order.findOneAndUpdate(
+      {
+        _id: order.id,
+        seller: store.id,
+        status: order.status
+      },
+      {
+        $set: {
+          status
+        }
+      },
+      {
+        new: true,
+        runValidators: true
+      }
     );
 
-    const customer = await User.findById(
-      order.customer
-    );
-
-    if (customer) {
-      mail(
-        customer.email,
-        'ShopSphere order update',
-        `Your order #${order.id.slice(-6)} is now ${status}`
-      ).catch(console.error);
+    if (!updatedOrder) {
+      return res.status(409).json({
+        error: 'Order status has already changed'
+      });
     }
 
+    // =================================================
+    // CUSTOMER DATABASE NOTIFICATION
+    // =================================================
+
+    try {
+      await notify(
+        updatedOrder.customer,
+        `Your order #${updatedOrder.id.slice(-8).toUpperCase()} is now ${status}`,
+        '/orders'
+      );
+
+    } catch (error) {
+      console.error(
+        'Order status notification failed:',
+        error
+      );
+    }
+
+    // =================================================
+    // CUSTOMER ORDER STATUS EMAIL
+    // =================================================
+
+    let emailSent = false;
+
+    try {
+      const customer = await User.findById(
+        updatedOrder.customer
+      ).select('name email');
+
+      if (customer?.email) {
+
+        const orderId =
+          updatedOrder.id.slice(-8).toUpperCase();
+
+        const subject =
+          `ShopSphere | Order ${status} #${orderId}`;
+
+        const htmlMessage =
+          createOrderStatusEmail(
+            updatedOrder,
+            customer,
+            status
+          );
+
+        // Wait for email sending before returning response
+
+        emailSent = await mail(
+          customer.email,
+          subject,
+          htmlMessage
+        );
+
+        if (!emailSent) {
+          console.error(
+            'Order status email skipped: SMTP not configured'
+          );
+        }
+
+      } else {
+        console.error(
+          'Customer email address not found'
+        );
+      }
+
+    } catch (error) {
+      console.error(
+        'Order status email failed:',
+        error
+      );
+    }
+
+    // =================================================
+    // ORDER STATUS SUCCESS RESPONSE
+    // =================================================
+
     res.json({
-      order
+      order: updatedOrder,
+      emailSent,
+      message: `Order status updated to ${status}`
     });
   })
 );
@@ -687,5 +1070,9 @@ r.get(
     });
   })
 );
+
+// =====================================================
+// EXPORT SELLER ROUTER
+// =====================================================
 
 export default r;
