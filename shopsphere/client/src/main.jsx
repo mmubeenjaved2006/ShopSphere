@@ -9,14 +9,14 @@ import {
   ShoppingBag, Search, UserRound, Heart, Menu, ArrowRight,
   Store as StoreIcon, Bell, LogOut, Plus, Trash2,
   CheckCircle, Truck, ShieldCheck, SlidersHorizontal,
-  ChevronRight
+  ChevronRight, Eye, EyeOff
 } from 'lucide-react';
 import { API, api, money } from './api';
 import './style.css';
 
 const C = createContext();
 const useApp = () => useContext(C);
-const img = p => p?.image || 'https://images.unsplash.com/photo-1542291026-7eec264c27ff?w=700';
+const img = p => p?.image?.trim() || undefined;
 
 function AppProvider({ children }) {
   const [user, setUser] = useState(null);
@@ -33,7 +33,7 @@ function AppProvider({ children }) {
   useEffect(() => {
     api('/auth/me')
       .then(d => setUser(d.user))
-      .catch(() => {})
+      .catch(() => { })
       .finally(() => setLoading(false));
   }, []);
 
@@ -57,8 +57,8 @@ function AppProvider({ children }) {
       const old = c.find(i => i._id === p._id);
       return old
         ? c.map(i => i._id === p._id
-            ? { ...i, quantity: Math.min(i.quantity + 1, p.stock) }
-            : i)
+          ? { ...i, quantity: Math.min(i.quantity + 1, p.stock) }
+          : i)
         : [...c, { ...p, quantity: 1 }];
     });
     flash('Added to your bag');
@@ -76,13 +76,118 @@ function AppProvider({ children }) {
 
 function Header() {
   const { user, setUser, cart, flash } = useApp();
+
   const [open, setOpen] = useState(false);
   const [search, setSearch] = useState('');
+  const [suggestions, setSuggestions] = useState([]);
+  const [showSuggestions, setShowSuggestions] = useState(false);
+  const [searchLoading, setSearchLoading] = useState(false);
+  const [searchError, setSearchError] = useState(false);
+
+  const searchRef = useRef(null);
   const navigate = useNavigate();
 
+  // Live product search
+  useEffect(() => {
+    const query = search.trim();
+
+    if (!user || !query) {
+      setSuggestions([]);
+      setSearchLoading(false);
+      setSearchError(false);
+      return;
+    }
+
+    let cancelled = false;
+
+    setSuggestions([]);
+    setSearchLoading(true);
+    setSearchError(false);
+
+    const timer = setTimeout(async () => {
+      try {
+        const data = await api(
+          '/products?q=' + encodeURIComponent(query)
+        );
+
+        if (!cancelled) {
+          setSuggestions((data.products || []).slice(0, 6));
+        }
+      } catch {
+        if (!cancelled) {
+          setSuggestions([]);
+          setSearchError(true);
+        }
+      } finally {
+        if (!cancelled) {
+          setSearchLoading(false);
+        }
+      }
+    }, 300);
+
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [search, user]);
+
+  // Close dropdown when clicking outside
+  useEffect(() => {
+    function handleOutsideClick(e) {
+      if (
+        searchRef.current &&
+        !searchRef.current.contains(e.target)
+      ) {
+        setShowSuggestions(false);
+      }
+    }
+
+    document.addEventListener(
+      'pointerdown',
+      handleOutsideClick
+    );
+
+    return () => {
+      document.removeEventListener(
+        'pointerdown',
+        handleOutsideClick
+      );
+    };
+  }, []);
+
+  function handleSearch(e) {
+    e.preventDefault();
+
+    if (!search.trim()) return;
+
+    navigate(
+      '/shop?q=' + encodeURIComponent(search.trim())
+    );
+
+    setShowSuggestions(false);
+    setOpen(false);
+  }
+
+  function selectProduct(id) {
+    setSearch('');
+    setSuggestions([]);
+    setShowSuggestions(false);
+    setOpen(false);
+
+    navigate('/product/' + id);
+  }
+
   async function logout() {
-    await api('/auth/logout', { method: 'POST' });
+    await api('/auth/logout', {
+      method: 'POST'
+    });
+
     setUser(null);
+    setSearch('');
+    setSuggestions([]);
+    setShowSuggestions(false);
+    setOpen(false);
+
     flash('Signed out');
     navigate('/');
   }
@@ -93,69 +198,199 @@ function Header() {
         Curated finds, everyday delights. &nbsp; • &nbsp;
         Cash on delivery across Pakistan
       </div>
+
       <header className="header">
         <div className="container header-inner">
+
           <Link to="/" className="logo">
             <span className="logo-mark">S</span>
             shop<span>sphere</span>
             <span className="logo-dot">.</span>
           </Link>
 
-          <form className="search" onSubmit={e => {
-            e.preventDefault();
-            navigate('/shop?q=' + encodeURIComponent(search));
-          }}>
-            <Search size={19} />
-            <input
-              placeholder="Search for something wonderful..."
-              value={search}
-              onChange={e => setSearch(e.target.value)}
-            />
-            <button aria-label="Search">
-              <ArrowRight size={18} />
-            </button>
-          </form>
+          {user && (
+            <form
+              ref={searchRef}
+              className="search"
+              onSubmit={handleSearch}
+              onBlur={e => {
+                if (!e.currentTarget.contains(e.relatedTarget)) {
+                  setShowSuggestions(false);
+                }
+              }}
+              onKeyDown={e => {
+                if (e.key === 'Escape') {
+                  setShowSuggestions(false);
+                }
+              }}
+            >
+              <Search size={19} />
+
+              <input
+                placeholder="Search for something wonderful..."
+                value={search}
+                autoComplete="off"
+                aria-label="Search products"
+                onFocus={() => setShowSuggestions(true)}
+                onChange={e => {
+                  setSearch(e.target.value);
+                  setSuggestions([]);
+                  setSearchLoading(Boolean(e.target.value.trim()));
+                  setSearchError(false);
+                  setShowSuggestions(true);
+                  setOpen(false);
+                }}
+              />
+
+              <button
+                type="submit"
+                aria-label="Search"
+              >
+                <ArrowRight size={18} />
+              </button>
+
+              {showSuggestions && search.trim() && (
+                <div className="search-dropdown">
+
+                  {searchLoading ? (
+                    <div className="search-message">
+                      Searching products...
+                    </div>
+                  ) : searchError ? (
+                    <div className="search-message">
+                      Unable to search. Please try again.
+                    </div>
+                  ) : suggestions.length ? (
+                    <>
+                      <div className="search-dropdown-heading">
+                        Suggested products
+                      </div>
+
+                      {suggestions.map(p => (
+                        <button
+                          key={p._id}
+                          type="button"
+                          className="search-result"
+                          onClick={() => selectProduct(p._id)}
+                        >
+                          <img
+                            src={img(p)}
+                            alt={p.name}
+                          />
+
+                          <div className="search-result-info">
+                            <strong>{p.name}</strong>
+
+                            <span>
+                              {money(p.price)}
+                            </span>
+                          </div>
+
+                          <ChevronRight size={17} />
+                        </button>
+                      ))}
+
+                      <button
+                        type="submit"
+                        className="search-view-all"
+                      >
+                        View all results
+                        <ArrowRight size={16} />
+                      </button>
+                    </>
+                  ) : (
+                    <div className="search-message">
+                      No matching products found.
+                    </div>
+                  )}
+
+                </div>
+              )}
+            </form>
+          )}
 
           <nav className={open ? 'nav open' : 'nav'}>
-            <NavLink to="/shop" onClick={() => setOpen(false)}>
+
+            <NavLink
+              to="/shop"
+              onClick={() => setOpen(false)}
+            >
               Shop all
             </NavLink>
 
             {user?.role === 'seller' && (
-              <NavLink to="/seller">Seller studio</NavLink>
+              <NavLink to="/seller">
+                Seller studio
+              </NavLink>
             )}
+
             {user?.role === 'admin' && (
-              <NavLink to="/admin">Admin</NavLink>
+              <NavLink to="/admin">
+                Admin
+              </NavLink>
             )}
+
             {user && (
-              <NavLink to="/notifications"><Bell size={19} /></NavLink>
+              <NavLink to="/notifications">
+                <Bell size={19} />
+              </NavLink>
             )}
+
             {user?.role === 'customer' && (
-              <NavLink to="/wishlist"><Heart size={19} /></NavLink>
+              <NavLink to="/wishlist">
+                <Heart size={19} />
+              </NavLink>
             )}
 
             {user ? (
               <>
-                <NavLink to="/account"><UserRound size={19} /></NavLink>
-                <button className="icon-button" onClick={logout} title="Sign out">
+                <NavLink to="/account">
+                  <UserRound size={19} />
+                </NavLink>
+
+                <button
+                  className="icon-button"
+                  onClick={logout}
+                  title="Sign out"
+                >
                   <LogOut size={19} />
                 </button>
               </>
             ) : (
-              <NavLink to="/login">Sign in</NavLink>
-            )}
-
-            {user?.role !== 'seller' && user?.role !== 'admin' && (
-              <NavLink to="/cart" className="bag">
-                <ShoppingBag size={20} />
-                <sup>{cart.reduce((a, i) => a + i.quantity, 0)}</sup>
+              <NavLink to="/login">
+                Sign in
               </NavLink>
             )}
+
+            {user?.role !== 'seller' &&
+              user?.role !== 'admin' && (
+                <NavLink
+                  to="/cart"
+                  className="bag"
+                >
+                  <ShoppingBag size={20} />
+
+                  <sup>
+                    {cart.reduce(
+                      (a, i) => a + i.quantity,
+                      0
+                    )}
+                  </sup>
+                </NavLink>
+              )}
+
           </nav>
 
-          <button className="icon-button hamburger" onClick={() => setOpen(!open)}>
+          <button
+            className="icon-button hamburger"
+            onClick={() => {
+              setOpen(!open);
+              setShowSuggestions(false);
+            }}
+          >
             <Menu />
           </button>
+
         </div>
       </header>
     </>
@@ -256,8 +491,8 @@ function Home() {
   const [categories, setCategories] = useState([]);
 
   useEffect(() => {
-    api('/products').then(d => setProducts(d.products)).catch(() => {});
-    api('/categories').then(setCategories).catch(() => {});
+    api('/products').then(d => setProducts(d.products)).catch(() => { });
+    api('/categories').then(setCategories).catch(() => { });
   }, []);
 
   return (
@@ -406,12 +641,12 @@ function Shop() {
         setProducts(d.products);
         setTotal(d.total);
       })
-      .catch(() => {})
+      .catch(() => { })
       .finally(() => setBusy(false));
   }, [params]);
 
   useEffect(() => {
-    api('/categories').then(setCategories).catch(() => {});
+    api('/categories').then(setCategories).catch(() => { });
   }, []);
 
   return (
@@ -583,7 +818,7 @@ function StorePage() {
   const [data, setData] = useState(null);
 
   useEffect(() => {
-    api('/stores/' + id).then(setData).catch(() => {});
+    api('/stores/' + id).then(setData).catch(() => { });
   }, [id]);
 
   return (
@@ -667,8 +902,10 @@ function GoogleSignIn({ onSuccess, onError, disabled }) {
 
   if (!import.meta.env.VITE_GOOGLE_CLIENT_ID) return null;
   return (
-    <div style={{ marginTop: 20, opacity: disabled ? 0.5 : 1,
-      pointerEvents: disabled ? 'none' : 'auto' }}>
+    <div style={{
+      marginTop: 20, opacity: disabled ? 0.5 : 1,
+      pointerEvents: disabled ? 'none' : 'auto'
+    }}>
       <p className="muted" style={{ textAlign: 'center', marginBottom: 12 }}>
         or continue with
       </p>
@@ -676,7 +913,32 @@ function GoogleSignIn({ onSuccess, onError, disabled }) {
     </div>
   );
 }
+function PasswordInput(props) {
+  const [visible, setVisible] = useState(false);
 
+  return (
+    <div className="password-wrapper">
+      <input
+        {...props}
+        type={visible ? 'text' : 'password'}
+      />
+
+      <button
+        type="button"
+        className="password-toggle"
+        onClick={() => setVisible(v => !v)}
+        aria-label={visible ? 'Hide password' : 'Show password'}
+        title={visible ? 'Hide password' : 'Show password'}
+      >
+        {visible ? (
+          <EyeOff size={19} />
+        ) : (
+          <Eye size={19} />
+        )}
+      </button>
+    </div>
+  );
+}
 function Auth({ register = false }) {
   const { setUser, flash } = useApp();
   const navigate = useNavigate();
@@ -695,7 +957,10 @@ function Auth({ register = false }) {
     try {
       const d = await api('/auth/google', {
         method: 'POST',
-        body: { credential }
+        body: {
+          credential,
+          role: register ? role : 'customer'
+        }
       });
       setUser(d.user);
       flash('Signed in with Google!');
@@ -774,23 +1039,28 @@ function Auth({ register = false }) {
           <label>Email address</label>
           <input
             required type="email" value={email}
-            onChange={e => setEmail(e.target.value)}
+            onChange={e => setEmail(e.target.value.toLowerCase())}
             placeholder="you@example.com"
           />
           <label>Password</label>
-          <input
-            required type="password" minLength={register ? 8 : 1}
-            value={password} onChange={e => setPassword(e.target.value)}
+          <PasswordInput
+            required
+            minLength={register ? 8 : 1}
+            value={password}
+            onChange={e => setPassword(e.target.value)}
             placeholder="At least 8 characters"
+            autoComplete={register ? 'new-password' : 'current-password'}
           />
           <ErrorBox message={error} />
           <button disabled={busy} className="btn primary full">
             {busy ? 'Please wait...' : register ? 'Create my account' : 'Sign in'}
             <ArrowRight size={18} />
           </button>
-          {(!register || role === 'customer') && (
-            <GoogleSignIn onSuccess={googleLogin} onError={setError} disabled={busy} />
-          )}
+          <GoogleSignIn
+            onSuccess={googleLogin}
+            onError={setError}
+            disabled={busy}
+          />
           <p className="auth-switch">
             {register ? 'Already a member?' : 'New to ShopSphere?'}{' '}
             <Link to={register ? '/login' : '/register'}>
@@ -810,44 +1080,213 @@ function Auth({ register = false }) {
 
 function PasswordPage({ reset = false }) {
   const [params] = useSearchParams();
+
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
   const [message, setMessage] = useState('');
+  const [error, setError] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [completed, setCompleted] = useState(false);
 
   async function submit(e) {
     e.preventDefault();
+
+    if (busy || completed) return;
+
+    setError('');
+    setMessage('');
+
+    if (reset) {
+      if (!params.get('token')) {
+        setError('Invalid password reset link');
+        return;
+      }
+
+      if (password.length < 8) {
+        setError('Password must contain at least 8 characters');
+        return;
+      }
+
+      if (password !== confirmPassword) {
+        setError('Passwords do not match');
+        return;
+      }
+    }
+
+    setBusy(true);
+
     try {
-      const d = await api('/auth/' + (reset ? 'reset-password' : 'forgot-password'), {
-        method: 'POST',
-        body: reset
-          ? { token: params.get('token'), password }
-          : { email }
-      });
+      const d = await api(
+        '/auth/' + (reset ? 'reset-password' : 'forgot-password'),
+        {
+          method: 'POST',
+
+          body: reset
+            ? {
+                token: params.get('token'),
+                password,
+                confirmPassword
+              }
+            : {
+                email: email.trim().toLowerCase()
+              }
+        }
+      );
+
       setMessage(d.message);
+      setCompleted(true);
+
+      setPassword('');
+      setConfirmPassword('');
+
     } catch (e) {
-      setMessage(e.message);
+      setError(e.message);
+
+    } finally {
+      setBusy(false);
     }
   }
 
   return (
     <div className="container page">
+
       <form className="form narrow" onSubmit={submit}>
-        <h1>{reset ? 'Reset password' : 'Forgot password'}</h1>
-        {reset ? (
-          <input
-            type="password" minLength="8" required
-            placeholder="New password" value={password}
-            onChange={e => setPassword(e.target.value)}
-          />
-        ) : (
-          <input
-            type="email" required placeholder="Your email"
-            value={email} onChange={e => setEmail(e.target.value)}
-          />
+
+        <span className="eyebrow">
+          ACCOUNT SECURITY
+        </span>
+
+        <h1>
+          {reset ? 'Reset password' : 'Forgot password'}
+        </h1>
+
+        <p className="muted">
+          {reset
+            ? 'Create a new password for your account.'
+            : 'Enter your registered email to receive a password reset link.'}
+        </p>
+
+        {!completed && (
+          <>
+            {reset ? (
+              <>
+                <label htmlFor="new-password">
+                  New Password *
+                </label>
+
+                <PasswordInput
+                  id="new-password"
+                  required
+                  minLength="8"
+                  placeholder="Enter new password"
+                  value={password}
+                  onChange={e => setPassword(e.target.value)}
+                  autoComplete="new-password"
+                />
+
+                <label htmlFor="confirm-password">
+                  Confirm Password *
+                </label>
+
+                <PasswordInput
+                  id="confirm-password"
+                  required
+                  minLength="8"
+                  placeholder="Confirm new password"
+                  value={confirmPassword}
+                  onChange={e => setConfirmPassword(e.target.value)}
+                  autoComplete="new-password"
+                />
+
+                {confirmPassword &&
+                  password !== confirmPassword && (
+                    <p className="error">
+                      Passwords do not match
+                    </p>
+                  )}
+
+              </>
+            ) : (
+              <>
+                <label htmlFor="reset-email">
+                  Email Address *
+                </label>
+
+                <input
+                  id="reset-email"
+                  type="email"
+                  required
+                  placeholder="you@example.com"
+                  value={email}
+                  onChange={e =>
+                    setEmail(e.target.value.toLowerCase())
+                  }
+                  autoComplete="email"
+                />
+
+                <p className="muted small">
+                  Your password reset link will expire
+                  after 15 minutes.
+                </p>
+              </>
+            )}
+
+            <ErrorBox message={error} />
+
+            <button
+              type="submit"
+              className="btn primary full"
+              disabled={
+                busy ||
+                (reset && password !== confirmPassword)
+              }
+            >
+              {busy
+                ? 'Please wait...'
+                : reset
+                  ? 'Reset Password'
+                  : 'Send Reset Link'}
+
+              <ArrowRight size={18} />
+            </button>
+          </>
         )}
-        <button className="btn primary">Continue</button>
-        <p>{message}</p>
+
+        {message && (
+          <div
+            role="status"
+            style={{
+              backgroundColor: '#edf5ef',
+              color: '#173e32',
+              padding: '15px',
+              borderRadius: '8px',
+              display: 'flex',
+              alignItems: 'center',
+              gap: '10px'
+            }}
+          >
+            <CheckCircle size={22} />
+
+            <span>{message}</span>
+          </div>
+        )}
+
+        <Link className="small-link" to="/login">
+          Back to Sign in
+        </Link>
+
+        {reset && !completed && (
+          <Link
+            className="small-link"
+            to="/forgot-password"
+          >
+            Request a new reset link
+          </Link>
+        )}
+
       </form>
+
     </div>
   );
 }
@@ -1253,10 +1692,14 @@ function Seller() {
   const [editing, setEditing] = useState(null);
   const [form, setForm] = useState(emptyProduct);
   const [storeForm, setStoreForm] = useState({
-    name: '',
-    description: '',
-    contact: ''
-  });
+  name: '',
+  description: '',
+  contact: ''
+});
+
+const [storeErrors, setStoreErrors] = useState({});
+const [storeSaving, setStoreSaving] = useState(false);
+const [productErrors, setProductErrors] = useState({});
 
   // NEW: Image upload states
   const [imageFile, setImageFile] = useState(null);
@@ -1264,205 +1707,379 @@ function Seller() {
   const [saving, setSaving] = useState(false);
   const [fileInputKey, setFileInputKey] = useState(0);
 
-  
-const load = async () => {
-  // Load categories independently
-  try {
-    const categoriesData = await api('/categories');
-    setCategories(categoriesData);
-  } catch (e) {
-    console.error('Categories loading failed:', e);
-    flash('Failed to load categories');
-  }
 
-  // Load seller dashboard data separately
-  const results = await Promise.allSettled([
-    api('/seller/store'),
-    api('/seller/products'),
-    api('/seller/orders'),
-    api('/seller/stats')
-  ]);
-
-  const [s, p, o, st] = results;
-
-  if (s.status === 'fulfilled') {
-    setStore(s.value.store);
-
-    if (s.value.store) {
-      setStoreForm({
-        name: s.value.store.name,
-        description: s.value.store.description || '',
-        contact: s.value.store.contact || ''
-      });
+  const load = async () => {
+    // Load categories independently
+    try {
+      const categoriesData = await api('/categories');
+      setCategories(categoriesData);
+    } catch (e) {
+      console.error('Categories loading failed:', e);
+      flash('Failed to load categories');
     }
-  }
 
-  if (p.status === 'fulfilled') {
-    setProducts(p.value.products);
-  }
+    // Load seller dashboard data separately
+    const results = await Promise.allSettled([
+      api('/seller/store'),
+      api('/seller/products'),
+      api('/seller/orders'),
+      api('/seller/stats')
+    ]);
 
-  if (o.status === 'fulfilled') {
-    setOrders(o.value.orders);
-  }
+    const [s, p, o, st] = results;
 
-  if (st.status === 'fulfilled') {
-    setStats(st.value);
-  }
+    if (s.status === 'fulfilled') {
+      setStore(s.value.store);
 
-  results.forEach((result, index) => {
-    if (result.status === 'rejected') {
-      console.error(
-        `Seller API ${index + 1} failed:`,
-        result.reason
-      );
+      if (s.value.store) {
+        setStoreForm({
+          name: s.value.store.name,
+          description: s.value.store.description || '',
+          contact: s.value.store.contact || ''
+        });
+      }
     }
-  });
-};
+
+    if (p.status === 'fulfilled') {
+      setProducts(p.value.products);
+    }
+
+    if (o.status === 'fulfilled') {
+      setOrders(o.value.orders);
+    }
+
+    if (st.status === 'fulfilled') {
+      setStats(st.value);
+    }
+
+    results.forEach((result, index) => {
+      if (result.status === 'rejected') {
+        console.error(
+          `Seller API ${index + 1} failed:`,
+          result.reason
+        );
+      }
+    });
+  };
 
   useEffect(() => {
     load();
   }, []);
 
   // NEW: Select product image
-  function handleImageChange(e) {
-    const file = e.target.files?.[0];
-    if (!file) return;
+  function isValidProductImageUrl(value) {
+  try {
+    const url = new URL(value);
 
-    const allowedTypes = [
-      'image/jpeg',
-      'image/png',
-      'image/webp'
-    ];
+    return (
+      ['http:', 'https:'].includes(url.protocol) &&
+      Boolean(url.hostname) &&
+      !url.username &&
+      !url.password
+    );
 
-    if (!allowedTypes.includes(file.type)) {
-      flash('Only JPG, PNG and WebP images are allowed');
-      e.target.value = '';
-      return;
-    }
-
-    if (file.size > 5 * 1024 * 1024) {
-      flash('Maximum image size is 5 MB');
-      e.target.value = '';
-      return;
-    }
-
-    setImageFile(file);
-
-    const reader = new FileReader();
-    reader.onload = () => {
-      setImagePreview(reader.result);
-    };
-    reader.readAsDataURL(file);
+  } catch {
+    return false;
   }
+}
 
-  function resetProductForm() {
-    setEditing(null);
-    setForm(emptyProduct());
+function updateProductField(field, value) {
+  setForm(prev => ({
+    ...prev,
+    [field]: value
+  }));
+
+  setProductErrors(prev => ({
+    ...prev,
+    [field]: '',
+    general: ''
+  }));
+}
+
+function handleImageChange(e) {
+  const file = e.target.files?.[0];
+
+  if (!file) return;
+
+  const allowedTypes = [
+    'image/jpeg',
+    'image/png',
+    'image/webp'
+  ];
+
+  if (!allowedTypes.includes(file.type)) {
+    setProductErrors(prev => ({
+      ...prev,
+      image: 'Only JPG, PNG and WebP images are allowed'
+    }));
+
+    e.target.value = '';
     setImageFile(null);
-    setImagePreview('');
-    setFileInputKey(k => k + 1);
+    setImagePreview(form.image);
+    return;
   }
 
-  function editProduct(p) {
-    setEditing(p._id);
-    setForm({
-      name: p.name,
-      description: p.description || '',
-      price: p.price,
-      stock: p.stock,
-      category: p.category?._id || p.category,
-      image: p.image || '',
-      active: p.active
-    });
+  if (file.size > 5 * 1024 * 1024) {
+    setProductErrors(prev => ({
+      ...prev,
+      image: 'Maximum image size is 5 MB'
+    }));
+
+    e.target.value = '';
     setImageFile(null);
-    setImagePreview(p.image || '');
-    setFileInputKey(k => k + 1);
-
-    document.getElementById('product-form')
-      ?.scrollIntoView({ behavior: 'smooth' });
+    setImagePreview(form.image);
+    return;
   }
+
+  setImageFile(file);
+
+  updateProductField('image', '');
+
+  const reader = new FileReader();
+
+  reader.onload = () => {
+    setImagePreview(reader.result);
+  };
+
+  reader.readAsDataURL(file);
+}
+
+function resetProductForm() {
+  setEditing(null);
+  setForm(emptyProduct());
+  setProductErrors({});
+  setImageFile(null);
+  setImagePreview('');
+  setFileInputKey(k => k + 1);
+}
+
+function editProduct(p) {
+  setEditing(p._id);
+
+  setProductErrors({});
+
+  setForm({
+    name: p.name,
+    description: p.description || '',
+    price: p.price,
+    stock: p.stock,
+    category: p.category?._id || p.category || '',
+    image: p.image || '',
+    active: p.active
+  });
+
+  setImageFile(null);
+  setImagePreview(p.image || '');
+  setFileInputKey(k => k + 1);
+
+  document.getElementById('product-form')
+    ?.scrollIntoView({ behavior: 'smooth' });
+}
 
   async function saveStore(e) {
-    e.preventDefault();
+  e.preventDefault();
 
-    try {
-      await api('/seller/store', {
-        method: store ? 'PATCH' : 'POST',
-        body: storeForm
-      });
-      flash(
-        store
-          ? 'Store updated'
-          : 'Store created. Awaiting admin approval.'
-      );
-      load();
-    } catch (e) {
-      flash(e.message);
-    }
+  if (storeSaving) return;
+
+  const data = {
+    name: storeForm.name.trim(),
+    description: storeForm.description.trim(),
+    contact: storeForm.contact.trim()
+  };
+
+  const errors = {};
+
+  if (data.name.length < 2) {
+    errors.name = 'Store name must contain at least 2 characters';
+  } else if (data.name.length > 100) {
+    errors.name = 'Store name cannot exceed 100 characters';
   }
+
+  if (!data.description) {
+    errors.description = 'Store description is required';
+  } else if (data.description.length > 1500) {
+    errors.description = 'Description cannot exceed 1500 characters';
+  }
+
+  if (!data.contact) {
+    errors.contact = 'Contact information is required';
+  } else if (data.contact.length > 100) {
+    errors.contact = 'Contact information cannot exceed 100 characters';
+  }
+
+  setStoreErrors(errors);
+
+  if (Object.keys(errors).length > 0) {
+    return;
+  }
+
+  setStoreSaving(true);
+
+  try {
+    await api('/seller/store', {
+      method: store ? 'PATCH' : 'POST',
+      body: data
+    });
+
+    setStoreForm(data);
+
+    flash(
+      store
+        ? 'Store updated successfully'
+        : 'Store created. Awaiting admin approval.'
+    );
+
+    await load();
+
+  } catch (e) {
+    setStoreErrors({
+      general: e.message || 'Unable to save store'
+    });
+
+  } finally {
+    setStoreSaving(false);
+  }
+}
 
   // NEW: Upload image first, then save product
   async function saveProduct(e) {
-    e.preventDefault();
-    if (saving) return;
+  e.preventDefault();
 
-    setSaving(true);
+  if (saving) return;
 
-    try {
-      let imageUrl = form.image;
+  const data = {
+    ...form,
+    name: form.name.trim(),
+    description: form.description.trim(),
+    image: form.image.trim(),
+    price: Number(form.price),
+    stock: Number(form.stock)
+  };
 
-      if (imageFile) {
-        const uploadData = new FormData();
-        uploadData.append('image', imageFile);
+  const errors = {};
 
-      const response = await fetch(`${API}/seller/upload`, {
-          method: 'POST',
-          credentials: 'include',
-          body: uploadData
-        });
+  if (data.name.length < 2) {
+    errors.name = 'Product name must contain at least 2 characters';
+  } else if (data.name.length > 150) {
+    errors.name = 'Product name cannot exceed 150 characters';
+  }
 
-        let result;
-        try {
-          result = await response.json();
-        } catch {
-          throw new Error('Upload server returned an invalid response');
-        }
+  if (!data.description) {
+    errors.description = 'Product description is required';
+  } else if (data.description.length > 3000) {
+    errors.description = 'Description cannot exceed 3000 characters';
+  }
 
-        if (!response.ok) {
-          throw new Error(
-            result.message ||
-            result.error ||
-            'Image upload failed'
-          );
-        }
+  if (
+    String(form.price).trim() === '' ||
+    !Number.isFinite(data.price) ||
+    data.price <= 0
+  ) {
+    errors.price = 'Price must be greater than zero';
+  }
 
-        if (!result.image) {
-          throw new Error('Upload response did not contain an image URL');
-        }
+  if (
+    String(form.stock).trim() === '' ||
+    !Number.isInteger(data.stock) ||
+    data.stock < 0
+  ) {
+    errors.stock = 'Enter a valid non-negative whole number';
+  }
 
-        imageUrl = result.image;
-      }
+  if (!categories.some(c => c._id === data.category)) {
+    errors.category = 'Please select a valid product category';
+  }
 
-      await api('/seller/products' + (editing ? '/' + editing : ''), {
-        method: editing ? 'PATCH' : 'POST',
-        body: {
-          ...form,
-          image: imageUrl,
-          price: Number(form.price),
-          stock: Number(form.stock)
-        }
-      });
-
-      flash('Product saved successfully');
-      resetProductForm();
-      await load();
-
-    } catch (e) {
-      flash(e.message);
-    } finally {
-      setSaving(false);
+  if (!imageFile && !data.image) {
+    errors.image = 'Product image is required';
+  } else if (!imageFile) {
+    if (
+      data.image.length > 4096 ||
+      !isValidProductImageUrl(data.image)
+    ) {
+      errors.image = 'Please enter a valid image URL';
     }
   }
+
+  setProductErrors(errors);
+
+  if (Object.keys(errors).length > 0) {
+    return;
+  }
+
+  setSaving(true);
+
+  try {
+    let imageUrl = data.image;
+
+    if (imageFile) {
+      const uploadData = new FormData();
+
+      uploadData.append('image', imageFile);
+
+      const response = await fetch(`${API}/seller/upload`, {
+        method: 'POST',
+        credentials: 'include',
+        body: uploadData
+      });
+
+      let result;
+
+      try {
+        result = await response.json();
+      } catch {
+        throw new Error('Upload server returned an invalid response');
+      }
+
+      if (!response.ok) {
+        throw new Error(
+          result.message ||
+          result.error ||
+          'Image upload failed'
+        );
+      }
+
+      if (!result.image) {
+        throw new Error('Upload response did not contain an image URL');
+      }
+
+      imageUrl = result.image;
+    }
+
+    if (!isValidProductImageUrl(imageUrl)) {
+      throw new Error('Invalid product image URL');
+    }
+
+    await api(
+      '/seller/products' + (editing ? '/' + editing : ''),
+      {
+        method: editing ? 'PATCH' : 'POST',
+        body: {
+          ...data,
+          image: imageUrl
+        }
+      }
+    );
+
+    flash(
+      editing
+        ? 'Product updated successfully'
+        : 'Product created successfully'
+    );
+
+    resetProductForm();
+
+    await load();
+
+  } catch (e) {
+    setProductErrors({
+      general: e.message || 'Unable to save product'
+    });
+
+  } finally {
+    setSaving(false);
+  }
+}
 
   async function deactivate(id) {
     if (!confirm('Deactivate this product?')) return;
@@ -1532,38 +2149,104 @@ const load = async () => {
       )}
 
       {tab === 'store' && (
-        <form className="form narrow" onSubmit={saveStore}>
-          <h2>{store ? 'Edit your storefront' : 'Create your storefront'}</h2>
+        <form className="form narrow" onSubmit={saveStore} noValidate>
 
-          <label>Store name</label>
-          <input
-            required
-            value={storeForm.name}
-            onChange={e => setStoreForm({
-              ...storeForm, name: e.target.value
-            })}
-          />
+  <h2>
+    {store ? 'Edit your storefront' : 'Create your storefront'}
+  </h2>
 
-          <label>Description</label>
-          <textarea
-            value={storeForm.description}
-            onChange={e => setStoreForm({
-              ...storeForm, description: e.target.value
-            })}
-          />
+  <label htmlFor="store-name">Store Name *</label>
 
-          <label>Contact information</label>
-          <input
-            value={storeForm.contact}
-            onChange={e => setStoreForm({
-              ...storeForm, contact: e.target.value
-            })}
-          />
+  <input
+    id="store-name"
+    required
+    minLength={2}
+    maxLength={100}
+    placeholder="Enter your store name"
+    value={storeForm.name}
+    onChange={e => {
+      setStoreForm({
+        ...storeForm,
+        name: e.target.value
+      });
 
-          <button className="btn primary">
-            {store ? 'Update store' : 'Create store'}
-          </button>
-        </form>
+      setStoreErrors(prev => ({
+        ...prev,
+        name: '',
+        general: ''
+      }));
+    }}
+  />
+
+  <ErrorBox message={storeErrors.name} />
+
+  <label htmlFor="store-description">
+    Store Description *
+  </label>
+
+  <textarea
+    id="store-description"
+    required
+    maxLength={1500}
+    placeholder="Describe your store"
+    value={storeForm.description}
+    onChange={e => {
+      setStoreForm({
+        ...storeForm,
+        description: e.target.value
+      });
+
+      setStoreErrors(prev => ({
+        ...prev,
+        description: '',
+        general: ''
+      }));
+    }}
+  />
+
+  <ErrorBox message={storeErrors.description} />
+
+  <label htmlFor="store-contact">
+    Contact Information *
+  </label>
+
+  <input
+    id="store-contact"
+    required
+    maxLength={100}
+    placeholder="Enter phone number or email"
+    value={storeForm.contact}
+    onChange={e => {
+      setStoreForm({
+        ...storeForm,
+        contact: e.target.value
+      });
+
+      setStoreErrors(prev => ({
+        ...prev,
+        contact: '',
+        general: ''
+      }));
+    }}
+  />
+
+  <ErrorBox message={storeErrors.contact} />
+
+  <ErrorBox message={storeErrors.general} />
+
+  <button
+    type="submit"
+    className="btn primary"
+    disabled={storeSaving}
+  >
+    {storeSaving
+      ? 'Please wait...'
+      : store
+        ? 'Update store'
+        : 'Create store'}
+  </button>
+
+</form>
       )}
 
       {tab === 'products' && (
@@ -1614,143 +2297,161 @@ const load = async () => {
             </table>
           </div>
 
-          <form
-            id="product-form"
-            className="form narrow spaced"
-            onSubmit={saveProduct}
-          >
-            <h2>{editing ? 'Edit product' : 'Add a product'}</h2>
+         <form
+  id="product-form"
+  className="form narrow spaced"
+  onSubmit={saveProduct}
+  noValidate
+>
+  <h2>{editing ? 'Edit product' : 'Add a product'}</h2>
 
-            <label>Product name</label>
-            <input
-              required
-              value={form.name}
-              onChange={e => setForm({
-                ...form, name: e.target.value
-              })}
-              placeholder="Enter product name"
-            />
+  <label>Product Name *</label>
+  <input
+    required
+    minLength={2}
+    maxLength={150}
+    value={form.name}
+    onChange={e => updateProductField('name', e.target.value)}
+    placeholder="Enter product name"
+  />
+  <ErrorBox message={productErrors.name} />
 
-            <label>Description</label>
-            <textarea
-              value={form.description}
-              onChange={e => setForm({
-                ...form, description: e.target.value
-              })}
-              placeholder="Describe your product"
-            />
+  <label>Product Description *</label>
+  <textarea
+    required
+    maxLength={3000}
+    value={form.description}
+    onChange={e => updateProductField('description', e.target.value)}
+    placeholder="Describe your product"
+  />
+  <ErrorBox message={productErrors.description} />
 
-            <label>Price (PKR)</label>
-            <input
-              required type="number" min="0"
-              value={form.price}
-              onChange={e => setForm({
-                ...form, price: e.target.value
-              })}
-              placeholder="Enter price"
-            />
+  <label>Price (PKR) *</label>
+  <input
+    required
+    type="number"
+    min="0"
+    step="any"
+    value={form.price}
+    onChange={e => updateProductField('price', e.target.value)}
+    placeholder="Enter price"
+  />
+  <ErrorBox message={productErrors.price} />
 
-            <label>Stock quantity</label>
-            <input
-              required type="number" min="0"
-              value={form.stock}
-              onChange={e => setForm({
-                ...form, stock: e.target.value
-              })}
-              placeholder="Available quantity"
-            />
+  <label>Stock Quantity *</label>
+  <input
+    required
+    type="number"
+    min="0"
+    step="1"
+    value={form.stock}
+    onChange={e => updateProductField('stock', e.target.value)}
+    placeholder="Available quantity"
+  />
+  <ErrorBox message={productErrors.stock} />
 
-            {/* NEW: CHOOSE FILE */}
-            <label>Upload Product Image</label>
-            <input
-              key={fileInputKey}
-              type="file"
-              accept="image/jpeg,image/png,image/webp"
-              onChange={handleImageChange}
-            />
-            <p className="muted small">
-              Choose a JPG, PNG or WebP image (maximum 5 MB).
-            </p>
+  <label>Product Image *</label>
+  <input
+    key={fileInputKey}
+    type="file"
+    accept="image/jpeg,image/png,image/webp"
+    onChange={handleImageChange}
+  />
 
-            {/* EXISTING: IMAGE URL */}
-            <label>Or enter Image URL</label>
-            <input
-              type="url"
-              placeholder="https://example.com/product.jpg"
-              value={form.image}
-              onChange={e => {
-                setForm({ ...form, image: e.target.value });
-                setImageFile(null);
-                setImagePreview(e.target.value);
-                setFileInputKey(k => k + 1);
-              }}
-            />
+  <p className="muted small">
+    Choose a JPG, PNG or WebP image (maximum 5 MB),
+    or enter an image URL below.
+  </p>
 
-            {/* NEW: IMAGE PREVIEW */}
-            {(imagePreview || form.image) && (
-              <div style={{ margin: '16px 0' }}>
-                <p className="muted small">Product Image Preview</p>
-                <img
-                  src={imagePreview || form.image}
-                  alt="Product preview"
-                  style={{
-                    width: '220px',
-                    height: '220px',
-                    objectFit: 'cover',
-                    borderRadius: '12px',
-                    border: '1px solid #ddd'
-                  }}
-                />
-                <div style={{ marginTop: '10px' }}>
-                  <button
-                    type="button"
-                    className="btn outline small"
-                    onClick={() => {
-                      setImageFile(null);
-                      setImagePreview('');
-                      setForm({ ...form, image: '' });
-                      setFileInputKey(k => k + 1);
-                    }}
-                  >
-                    Remove Image
-                  </button>
-                </div>
-              </div>
-            )}
+  <label>Image URL</label>
+  <input
+    type="url"
+    maxLength={4096}
+    placeholder="https://example.com/product.jpg"
+    value={form.image}
+    onChange={e => {
+      updateProductField('image', e.target.value);
+      setImageFile(null);
+      setImagePreview(e.target.value);
+      setFileInputKey(k => k + 1);
+    }}
+  />
 
-            <label>Category</label>
-            <select
-              required
-              value={form.category}
-              onChange={e => setForm({
-                ...form, category: e.target.value
-              })}
-            >
-              <option value="">Choose category</option>
-              {categories.map(c => (
-                <option value={c._id} key={c._id}>
-                  {c.name}
-                </option>
-              ))}
-            </select>
+  <ErrorBox message={productErrors.image} />
 
-            {editing && (
-              <label className="check">
-                <input
-                  type="checkbox"
-                  checked={form.active !== false}
-                  onChange={e => setForm({
-                    ...form, active: e.target.checked
-                  })}
-                />
-                Active
-              </label>
-            )}
+  {(imagePreview || form.image) && (
+    <div style={{ margin: '16px 0' }}>
+      <p className="muted small">Product Image Preview</p>
 
-            <button className="btn primary" disabled={saving}>
-              {saving ? 'Saving product...' : 'Save product'}
-            </button>
-          </form>
+      <img
+        src={imagePreview || form.image}
+        alt="Product preview"
+        style={{
+          width: '220px',
+          maxWidth: '100%',
+          height: '220px',
+          objectFit: 'cover',
+          borderRadius: '12px',
+          border: '1px solid #ddd'
+        }}
+      />
+
+      <div style={{ marginTop: '10px' }}>
+        <button
+          type="button"
+          className="btn outline small"
+          onClick={() => {
+            setImageFile(null);
+            setImagePreview('');
+            updateProductField('image', '');
+            setFileInputKey(k => k + 1);
+          }}
+        >
+          Remove Image
+        </button>
+      </div>
+    </div>
+  )}
+
+  <label>Product Category *</label>
+  <select
+    required
+    value={form.category}
+    onChange={e => updateProductField('category', e.target.value)}
+  >
+    <option value="">Choose category</option>
+
+    {categories.map(c => (
+      <option value={c._id} key={c._id}>
+        {c.name}
+      </option>
+    ))}
+  </select>
+
+  <ErrorBox message={productErrors.category} />
+
+  {editing && (
+    <label className="check">
+      <input
+        type="checkbox"
+        checked={form.active !== false}
+        onChange={e => updateProductField('active', e.target.checked)}
+      />
+      Active
+    </label>
+  )}
+
+  <ErrorBox message={productErrors.general} />
+
+  <button
+    type="submit"
+    className="btn primary"
+    disabled={saving}
+  >
+    {saving ? 'Saving product...' : 'Save product'}
+  </button>
+</form>
+            
         </>
       )}
 

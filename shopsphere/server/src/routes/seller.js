@@ -1,4 +1,3 @@
-
 import { Router } from 'express';
 import { z } from 'zod';
 import multer from 'multer';
@@ -101,6 +100,7 @@ function uploadToCloudinary(buffer) {
         folder: 'shopsphere/products',
         resource_type: 'image'
       },
+
       (error, result) => {
         if (error) {
           return reject(error);
@@ -193,6 +193,7 @@ r.post(
           message: 'Image uploaded successfully',
           image: imageUrl
         });
+
       } catch (error) {
         console.error(
           'Cloudinary upload failed:',
@@ -220,6 +221,10 @@ r.get(
   })
 );
 
+// =====================================================
+// CREATE STORE — UPDATED VALIDATION
+// =====================================================
+
 r.post(
   '/store',
   asyncRoute(async (req, res) => {
@@ -231,9 +236,22 @@ r.post(
 
     const data = validate(
       z.object({
-        name: z.string().min(2).max(100),
-        description: z.string().max(1500).default(''),
-        contact: z.string().max(100).default('')
+
+        name: z.string()
+          .trim()
+          .min(2, 'Store name must contain at least 2 characters')
+          .max(100, 'Store name cannot exceed 100 characters'),
+
+        description: z.string()
+          .trim()
+          .min(1, 'Store description is required')
+          .max(1500, 'Store description cannot exceed 1500 characters'),
+
+        contact: z.string()
+          .trim()
+          .min(1, 'Contact information is required')
+          .max(100, 'Contact information cannot exceed 100 characters')
+
       }),
       req
     );
@@ -249,6 +267,10 @@ r.post(
   })
 );
 
+// =====================================================
+// UPDATE STORE — UPDATED VALIDATION
+// =====================================================
+
 r.patch(
   '/store',
   asyncRoute(async (req, res) => {
@@ -262,9 +284,25 @@ r.patch(
 
     const data = validate(
       z.object({
-        name: z.string().min(2).max(100).optional(),
-        description: z.string().max(1500).optional(),
-        contact: z.string().max(100).optional()
+
+        name: z.string()
+          .trim()
+          .min(2, 'Store name must contain at least 2 characters')
+          .max(100, 'Store name cannot exceed 100 characters')
+          .optional(),
+
+        description: z.string()
+          .trim()
+          .min(1, 'Store description is required')
+          .max(1500, 'Store description cannot exceed 1500 characters')
+          .optional(),
+
+        contact: z.string()
+          .trim()
+          .min(1, 'Contact information is required')
+          .max(100, 'Contact information cannot exceed 100 characters')
+          .optional()
+
       }),
       req
     );
@@ -302,24 +340,102 @@ r.get(
   })
 );
 
+// =====================================================
+// PRODUCT IMAGE URL VALIDATION
+// =====================================================
+
+function isValidImageUrl(value) {
+  try {
+    const url = new URL(value);
+
+    return (
+      (url.protocol === 'https:' ||
+        url.protocol === 'http:') &&
+      Boolean(url.hostname) &&
+      !url.username &&
+      !url.password
+    );
+
+  } catch {
+    return false;
+  }
+}
+
+// =====================================================
+// REQUIRED NUMBER VALIDATION
+// =====================================================
+
+function parseProductNumber(value) {
+  if (typeof value === 'number') {
+    return value;
+  }
+
+  if (
+    typeof value === 'string' &&
+    value.trim() !== ''
+  ) {
+    return Number(value);
+  }
+
+  return undefined;
+}
+
+// =====================================================
+// PRODUCT SCHEMA — UPDATED VALIDATION
+// =====================================================
+
 const productSchema = z.object({
-  name: z.string().min(2).max(150),
 
-  description: z.string().max(3000).default(''),
+  name: z.string()
+    .trim()
+    .min(2, 'Product name must contain at least 2 characters')
+    .max(150, 'Product name cannot exceed 150 characters'),
 
-  price: z.coerce.number().min(0),
+  description: z.string()
+    .trim()
+    .min(1, 'Product description is required')
+    .max(3000, 'Product description cannot exceed 3000 characters'),
 
-  stock: z.coerce.number().int().min(0),
+  price: z.preprocess(
+    parseProductNumber,
 
-  category: z.string().min(1),
+    z.number()
+      .finite('Enter a valid product price')
+      .positive('Product price must be greater than zero')
+  ),
 
-  image: z.string().max(2000000).default(''),
+  stock: z.preprocess(
+    parseProductNumber,
+
+    z.number()
+      .finite('Enter a valid stock quantity')
+      .int('Stock quantity must be a whole number')
+      .min(0, 'Stock quantity cannot be negative')
+  ),
+
+  category: z.string()
+    .trim()
+    .min(1, 'Product category is required')
+    .regex(
+      /^[a-fA-F0-9]{24}$/,
+      'Invalid product category'
+    ),
+
+  image: z.string()
+    .trim()
+    .min(1, 'Product image is required')
+    .max(4096, 'Image URL is too long')
+    .refine(
+      isValidImageUrl,
+      'Please provide a valid HTTP or HTTPS image URL'
+    ),
 
   active: z.boolean().optional()
+
 });
 
 // =====================================================
-// CREATE PRODUCT
+// CREATE PRODUCT — UPDATED VALIDATION
 // =====================================================
 
 r.post(
@@ -342,7 +458,7 @@ r.post(
 
     if (!validCategory) {
       return res.status(400).json({
-        error: 'Invalid category'
+        error: 'Invalid or inactive product category'
       });
     }
 
@@ -358,13 +474,19 @@ r.post(
 );
 
 // =====================================================
-// UPDATE PRODUCT
+// UPDATE PRODUCT — UPDATED VALIDATION
 // =====================================================
 
 r.patch(
   '/products/:id',
   asyncRoute(async (req, res) => {
     const store = await own(req.user);
+
+    if (!store) {
+      return res.status(403).json({
+        error: 'Create your store first'
+      });
+    }
 
     const data = validate(
       productSchema.partial(),
@@ -379,14 +501,14 @@ r.patch(
       }))
     ) {
       return res.status(400).json({
-        error: 'Invalid category'
+        error: 'Invalid or inactive product category'
       });
     }
 
     const product = await Product.findOneAndUpdate(
       {
         _id: req.params.id,
-        store: store?.id
+        store: store.id
       },
       data,
       {
